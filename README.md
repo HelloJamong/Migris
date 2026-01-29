@@ -167,14 +167,12 @@ mysql -h localhost -u root -p database_name < /backup/db-backup/before_migration
 - 대용량 데이터베이스의 경우 작업 시간 고려
 - `all_query.txt` 파일에는 실제 서비스 DB 정보가 포함되므로 Git에 커밋하지 않도록 주의
 
-## 라이선스
+---
 
-MIT License
+<div align="center">
 
-## 기여
+**본 프로젝트는 [Claude Code](https://claude.ai/code)를 활용하여 개발되었습니다.**
 
-이슈 및 풀 리퀘스트는 언제나 환영합니다.
+</div>
 
-## 지원
 
-문제가 발생하거나 질문이 있으시면 이슈를 등록해주세요.
