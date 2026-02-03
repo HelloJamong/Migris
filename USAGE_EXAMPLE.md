@@ -2,31 +2,21 @@
 
 ## 스크립트 실행 전 준비사항
 
-### 1. 백업 디렉토리 권한 확인
-스크립트는 `/backup/db-backup` 디렉토리를 자동으로 생성합니다.
-루트 디렉토리에 생성되므로 sudo 권한이 필요할 수 있습니다.
-
-### 2. MariaDB 접속 정보 준비
-- 호스트 주소
-- 포트 (기본값: 3306)
-- 사용자 이름
-- 비밀번호
-- 데이터베이스 이름
-
-## 실행 방법
-
-### 기본 사용법
+### 1. 연결 정보 변수 설정
+`migris.sh` 상단의 변수에 실제 데이터베이스 연결 정보를 입력합니다.
+`DB_PASSWORD`는 반드시 공란으로 유지하며, 실행 시 프롬프트로 입력받습니다.
 
 ```bash
-# 로컬 데이터베이스에 연결
-./migris.sh -u root -p your_password -d database_name
-
-# 호스트 지정
-./migris.sh -h localhost -u root -p your_password -d database_name
-
-# 원격 데이터베이스에 연결
-./migris.sh -h 192.168.1.100 -P 3306 -u dbuser -p dbpass -d database_name
+DB_HOST="localhost"
+DB_PORT="3306"
+DB_USER="root"
+DB_PASSWORD=""          # 공란 유지 — 실행 시 프롬프트로 입력받음
+DB_NAME="database_name"
 ```
+
+### 2. 백업 디렉토리 권한 확인
+스크립트는 `/backup/db-backup` 디렉토리를 자동으로 생성합니다.
+루트 디렉토리에 생성되므로 sudo 권한이 필요할 수 있습니다.
 
 ### sudo 권한 없이 실행하는 경우
 
@@ -38,27 +28,38 @@ sudo mkdir -p /backup/db-backup
 sudo chmod 777 /backup/db-backup  # 또는 특정 사용자에게 권한 부여
 ```
 
+## 실행 방법
+
+```bash
+./migris.sh
+```
+
 ## 실행 과정
 
 스크립트는 다음 순서로 실행됩니다:
 
-1. **디렉토리 확인**
+1. **연결 정보 검증**
+   - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME` 변수 공란 여부 확인
+   - 공란인 변수가 있으면 해당 변수명과 함께 오류 출력 후 종료
+   - 검증 통과 시 비밀번호 프롬프트 표시
+
+2. **디렉토리 확인**
    - `/backup/db-backup` 디렉토리 존재 확인
    - 없으면 자동 생성 (sudo 권한 필요)
    - 쿼리 파일 확인
 
-2. **데이터베이스 연결 테스트**
-   - 제공된 접속 정보로 데이터베이스 연결 확인
+3. **데이터베이스 연결 테스트**
+   - 변수에 설정된 접속 정보로 데이터베이스 연결 확인
 
-3. **백업 수행**
+4. **백업 수행**
    - 전체 데이터베이스를 `/backup/db-backup/before_migration_YYYYMMDD_HHMMSS.sql` 파일로 백업
 
-4. **쿼리 실행**
+5. **쿼리 실행**
    - 스크립트와 동일한 경로의 `all_query.txt` 파일의 쿼리를 순차적으로 실행
    - 각 쿼리 실행 전 중복 여부 확인
    - 이미 존재하는 항목은 스킵
 
-5. **결과 출력**
+6. **결과 출력**
    - 실행 결과 요약 출력
    - 로그 파일 생성: `migration_result_YYYYMMDD_HHMMSS.log`
 
@@ -69,8 +70,9 @@ sudo chmod 777 /backup/db-backup  # 또는 특정 사용자에게 권한 부여
   Migris - Database Migration Tool
 ========================================
 
+데이터베이스 비밀번호: ██████
 [INFO] 마이그레이션 시작: 2026-01-29 15:00:00
-[INFO] 데이터베이스: database@localhost:3306
+[INFO] 데이터베이스: database_name@localhost:3306
 [INFO] 디렉토리 구조 확인 중...
 [INFO] 백업 디렉토리 확인: /backup/db-backup
 [INFO] 쿼리 파일 확인: /home/user/all_query.txt
@@ -151,6 +153,22 @@ grep "SKIP" migration_result_20260129_150000.log
 4. **테스트**: 프로덕션 환경 적용 전 반드시 테스트 환경에서 먼저 실행하세요.
 
 ## 문제 해결
+
+### "변수가 설정되지 않았습니다" 오류
+
+`migris.sh` 상단의 `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME` 중 하나라도 공란이면 실행 시에 아래와 같이 오류가 출력됩니다:
+
+```
+[ERROR] DB_HOST 변수가 설정되지 않았습니다. migris.sh 상단 변수 설정을 확인하세요.
+
+설정 예시:
+  DB_HOST="localhost"
+  DB_PORT="3306"
+  DB_USER="root"
+  DB_NAME="database_name"
+```
+
+해당 변수에 실제 값을 채워두고 다시 실행하세요.
 
 ### "백업 디렉토리 생성 실패" 오류
 

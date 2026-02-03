@@ -47,35 +47,41 @@ cp all_query.txt.sample all_query.txt
 # all_query.txt 파일을 열어 실제 마이그레이션 쿼리 작성
 vim all_query.txt
 
+# migris.sh 상단의 데이터베이스 연결 정보 변수 설정
+vim migris.sh
+
 # 실행 권한 부여
 chmod +x migris.sh
 ```
 
 ## 사용 방법
 
-### 기본 사용법
+### 1. 연결 정보 설정
+
+`migris.sh` 상단의 변수에 데이터베이스 연결 정보를 입력합니다. `DB_PASSWORD`는 반드시 공란으로 유지해야 합니다.
 
 ```bash
-./migris.sh [옵션]
+DB_HOST="localhost"
+DB_PORT="3306"
+DB_USER="root"
+DB_PASSWORD=""          # 공란 유지 — 실행 시 프롬프트로 입력받음
+DB_NAME="database_name"
 ```
 
-### 옵션
-
-- `-h, --host`: 데이터베이스 호스트 (기본값: localhost)
-- `-P, --port`: 데이터베이스 포트 (기본값: 3306)
-- `-u, --user`: 데이터베이스 사용자 (필수)
-- `-p, --password`: 데이터베이스 비밀번호 (필수)
-- `-d, --database`: 대상 데이터베이스명 (필수)
-- `--help`: 도움말 출력
-
-### 사용 예시
+### 2. 스크립트 실행
 
 ```bash
-# 로컬 데이터베이스 마이그레이션
-./migris.sh -u root -p your_password -d database_name
+./migris.sh
+```
 
-# 원격 데이터베이스 마이그레이션
-./migris.sh -h 192.168.1.100 -P 3306 -u dbuser -p dbpass -d database_name
+실행 후 비밀번호 프롬프트가 표시되며, 입력 시 문자는 화면에 표시되지 않습니다.
+
+```
+========================================
+  Migris - Database Migration Tool
+========================================
+
+데이터베이스 비밀번호: ██████
 ```
 
 ## 마이그레이션 쿼리 작성
@@ -143,11 +149,14 @@ tail -f migration_result_YYYYMMDD_HHMMSS.log
 
 ## 문제 해결
 
+### 변수 미설정 오류 시
+
+`migris.sh` 상단의 `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME` 중 하나라도 공란이면 실행 시에 해당 변수명과 함께 오류가 출력됩니다. 해당 변수에 값을 채워두세요.
+
 ### 마이그레이션 실패 시
 
 1. 로그 파일 확인
-2. `--rollback` 옵션으로 이전 상태로 복구
-3. 백업 디렉토리에서 수동 복구 가능
+2. 백업 디렉토리에서 수동 복구 가능
 
 ### 백업 복구
 
@@ -165,6 +174,7 @@ mysql -h localhost -u root -p database_name < /backup/db-backup/before_migration
 - 충분한 디스크 공간 확보 (데이터베이스 크기의 2배 이상 권장)
 - 마이그레이션 수행 전 수동 백업 권장
 - 대용량 데이터베이스의 경우 작업 시간 고려
+- `migris.sh` 상단의 연결 정보 변수(`DB_HOST` 등)에는 실제 서비스 정보가 포함될 수 있으므로 주의하여 관리하세요
 - `all_query.txt` 파일에는 실제 서비스 DB 정보가 포함되므로 Git에 커밋하지 않도록 주의
 
 ## 라이선스
