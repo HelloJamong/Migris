@@ -296,7 +296,7 @@ record_exists() {
         return 1  # 패턴 불일치 시 INSERT 시도
     fi
 
-    # 스키마 접두사 제거 (예: vmsolution.ref_code → ref_code)
+    # 스키마 접두사 제거
     local table_name=$(echo "$table" | awk -F. '{print $NF}')
 
     # ref_code 테이블의 경우 ref_code_group + ref_code 조합으로 중복 확인
