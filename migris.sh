@@ -5,7 +5,7 @@
 # 운영 중인 시스템의 데이터베이스를 안전하게 마이그레이션
 #==============================================================================
 
-set -e  # 에러 발생 시 스크립트 중단
+# 참고: set -e 사용하지 않음 — 각 단계에서 명시적으로 exit 1로 종료 처리
 
 #==============================================================================
 # 색상 정의
@@ -27,8 +27,9 @@ LOG_FILE="${SCRIPT_DIR}/migration_result_${TIMESTAMP}.log"
 BACKUP_FILE="${BACKUP_DIR}/before_migration_${TIMESTAMP}.sql"
 
 # 데이터베이스 연결 정보
+# 패스워드(DB_PASSWORD)는 실행 시 프롬프트로 입력받음 — 여기에 값을 넣지 않아야 함
 DB_HOST=""
-DB_PORT="3306"
+DB_PORT=""
 DB_USER=""
 DB_PASSWORD=""
 DB_NAME=""
@@ -73,72 +74,47 @@ log() {
 }
 
 #==============================================================================
-# 사용법 출력
+# 연결 정보 검증 및 비밀번호 입력
 #==============================================================================
-usage() {
-    cat << EOF
-사용법: $0 [옵션]
+validate_config() {
+    local has_error=false
 
-옵션:
-    -h, --host HOST        데이터베이스 호스트 (기본값: localhost)
-    -P, --port PORT        데이터베이스 포트 (기본값: 3306)
-    -u, --user USER        데이터베이스 사용자 (필수)
-    -p, --password PASS    데이터베이스 비밀번호 (필수)
-    -d, --database DB      데이터베이스 이름 (필수)
-    --help                 도움말 출력
-
-예시:
-    $0 -u root -p --d database_name
-
-EOF
-    exit 1
-}
-
-#==============================================================================
-# 인자 파싱
-#==============================================================================
-parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -h|--host)
-                DB_HOST="$2"
-                shift 2
-                ;;
-            -P|--port)
-                DB_PORT="$2"
-                shift 2
-                ;;
-            -u|--user)
-                DB_USER="$2"
-                shift 2
-                ;;
-            -p|--password)
-                DB_PASSWORD="$2"
-                shift 2
-                ;;
-            -d|--database)
-                DB_NAME="$2"
-                shift 2
-                ;;
-            --help)
-                usage
-                ;;
-            *)
-                echo "알 수 없는 옵션: $1"
-                usage
-                ;;
-        esac
-    done
-
-    # 필수 인자 확인
-    if [[ -z "$DB_USER" ]] || [[ -z "$DB_PASSWORD" ]] || [[ -z "$DB_NAME" ]]; then
-        echo -e "${RED}Error: 필수 인자가 누락되었습니다.${NC}"
-        usage
+    # DB_HOST, DB_PORT, DB_USER, DB_NAME 공란 여부 검증
+    if [[ -z "$DB_HOST" ]]; then
+        echo -e "${RED}[ERROR] DB_HOST 변수가 설정되지 않았습니다. migris.sh 상단 변수 설정을 확인하세요.${NC}"
+        has_error=true
+    fi
+    if [[ -z "$DB_PORT" ]]; then
+        echo -e "${RED}[ERROR] DB_PORT 변수가 설정되지 않았습니다. migris.sh 상단 변수 설정을 확인하세요.${NC}"
+        has_error=true
+    fi
+    if [[ -z "$DB_USER" ]]; then
+        echo -e "${RED}[ERROR] DB_USER 변수가 설정되지 않았습니다. migris.sh 상단 변수 설정을 확인하세요.${NC}"
+        has_error=true
+    fi
+    if [[ -z "$DB_NAME" ]]; then
+        echo -e "${RED}[ERROR] DB_NAME 변수가 설정되지 않았습니다. migris.sh 상단 변수 설정을 확인하세요.${NC}"
+        has_error=true
     fi
 
-    # 기본값 설정
-    if [[ -z "$DB_HOST" ]]; then
-        DB_HOST="localhost"
+    if [[ $has_error == true ]]; then
+        echo ""
+        echo -e "${YELLOW}설정 예시:${NC}"
+        echo '  DB_HOST="localhost"'
+        echo '  DB_PORT="3306"'
+        echo '  DB_USER="root"'
+        echo '  DB_NAME="database_name"'
+        exit 1
+    fi
+
+    # 비밀번호는 프롬프트로 입력받음
+    echo -n "데이터베이스 비밀번호: "
+    read -rs DB_PASSWORD
+    echo ""  # 줄바꿈
+
+    if [[ -z "$DB_PASSWORD" ]]; then
+        echo -e "${RED}[ERROR] 비밀번호가 비어있습니다.${NC}"
+        exit 1
     fi
 }
 
@@ -300,27 +276,40 @@ view_exists() {
 record_exists() {
     local query="$1"
 
-    # INSERT 쿼리에서 테이블명과 값 추출 (간단한 패턴)
-    if [[ $query =~ insert[[:space:]]+into[[:space:]]+([a-zA-Z_]+)[[:space:]]+values[[:space:]]*\(([^)]+)\) ]]; then
-        local table="${BASH_REMATCH[1]}"
-        local values="${BASH_REMATCH[2]}"
+    # INSERT 쿼리에서 테이블명과 컬럼/값 추출
+    # 정규표현식을 변수로 선언하여 bash 파싱 충돌 방지
+    local re_insert='INSERT[[:space:]]+INTO[[:space:]]+([a-zA-Z_.]+)[[:space:]]+\(([^)]+)\)[[:space:]]+VALUES[[:space:]]*\((.+)\);'
+    local re_insert_no_col='INSERT[[:space:]]+INTO[[:space:]]+([a-zA-Z_.]+)[[:space:]]+VALUES[[:space:]]*\((.+)\);'
 
-        # 첫 번째 값을 기준으로 확인 (일반적으로 PK)
-        local first_value=$(echo "$values" | cut -d',' -f1 | xargs)
+    local table=""
+    local columns=""
+    local values=""
 
-        # ref_code 테이블의 경우 특별 처리
-        if [[ $table == "ref_code" ]]; then
-            # ref_code_group과 ref_code 값 추출
-            local ref_code_group=$(echo "$values" | cut -d',' -f1 | xargs | sed "s/'//g")
-            local ref_code=$(echo "$values" | cut -d',' -f2 | xargs | sed "s/'//g")
-            local result=$(execute_mysql "SELECT COUNT(*) as cnt FROM $table WHERE ref_code_group='$ref_code_group' AND ref_code='$ref_code';" | tail -n1)
-            [[ "$result" -gt 0 ]]
-        else
-            return 1  # 다른 테이블은 INSERT 시도
-        fi
+    if [[ $query =~ $re_insert ]]; then
+        table="${BASH_REMATCH[1]}"
+        columns="${BASH_REMATCH[2]}"
+        values="${BASH_REMATCH[3]}"
+    elif [[ $query =~ $re_insert_no_col ]]; then
+        table="${BASH_REMATCH[1]}"
+        values="${BASH_REMATCH[2]}"
     else
-        return 1
+        return 1  # 패턴 불일치 시 INSERT 시도
     fi
+
+    # 스키마 접두사 제거 (예: vmsolution.ref_code → ref_code)
+    local table_name=$(echo "$table" | awk -F. '{print $NF}')
+
+    # ref_code 테이블의 경우 ref_code_group + ref_code 조합으로 중복 확인
+    if [[ $table_name == "ref_code" ]]; then
+        local ref_code_group=$(echo "$values" | cut -d',' -f1 | xargs | sed "s/'//g")
+        local ref_code_val=$(echo "$values" | cut -d',' -f2 | xargs | sed "s/'//g")
+        local result
+        result=$(execute_mysql "SELECT COUNT(*) as cnt FROM $table_name WHERE ref_code_group='$ref_code_group' AND ref_code='$ref_code_val';" | tail -n1)
+        [[ "$result" -gt 0 ]]
+        return $?
+    fi
+
+    return 1  # 다른 테이블은 INSERT 시도
 }
 
 #==============================================================================
@@ -353,7 +342,7 @@ should_skip_query() {
             ;;
         CREATE_INDEX)
             # 인덱스명과 테이블명 추출
-            if [[ $query =~ create[[:space:]]+(unique[[:space:]]+)?index[[:space:]]+([a-zA-Z_]+)[[:space:]]+on[[:space:]]+([a-zA-Z_]+) ]]; then
+            if [[ $query =~ CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX[[:space:]]+([a-zA-Z_]+)[[:space:]]+ON[[:space:]]+([a-zA-Z_]+) ]]; then
                 local index_name="${BASH_REMATCH[2]}"
                 local table_name="${BASH_REMATCH[3]}"
                 if index_exists "$table_name" "$index_name"; then
@@ -379,19 +368,21 @@ should_skip_query() {
             fi
             # DROP 작업은 존재 여부 확인 후 처리
             if [[ $query =~ DROP ]]; then
-                if [[ $query =~ drop[[:space:]]+column[[:space:]]+([a-zA-Z_]+) ]]; then
+                if [[ $query =~ DROP[[:space:]]+COLUMN[[:space:]]+([a-zA-Z_]+) ]]; then
                     local column_name="${BASH_REMATCH[1]}"
-                    if [[ $query =~ alter[[:space:]]+table[[:space:]]+([a-zA-Z_]+) ]]; then
-                        local table_name="${BASH_REMATCH[1]}"
+                    if [[ $query =~ ALTER[[:space:]]+TABLE[[:space:]]+([a-zA-Z_.]+) ]]; then
+                        local full_table="${BASH_REMATCH[1]}"
+                        local table_name=$(echo "$full_table" | awk -F. '{print $NF}')
                         if ! column_exists "$table_name" "$column_name"; then
                             log SKIP "컬럼이 존재하지 않음 (이미 삭제됨): $table_name.$column_name"
                             return 0
                         fi
                     fi
-                elif [[ $query =~ drop[[:space:]]+key[[:space:]]+([a-zA-Z_]+) ]]; then
+                elif [[ $query =~ DROP[[:space:]]+KEY[[:space:]]+([a-zA-Z_]+) ]]; then
                     local key_name="${BASH_REMATCH[1]}"
-                    if [[ $query =~ alter[[:space:]]+table[[:space:]]+([a-zA-Z_]+) ]]; then
-                        local table_name="${BASH_REMATCH[1]}"
+                    if [[ $query =~ ALTER[[:space:]]+TABLE[[:space:]]+([a-zA-Z_.]+) ]]; then
+                        local full_table="${BASH_REMATCH[1]}"
+                        local table_name=$(echo "$full_table" | awk -F. '{print $NF}')
                         if ! index_exists "$table_name" "$key_name"; then
                             log SKIP "인덱스가 존재하지 않음 (이미 삭제됨): $table_name.$key_name"
                             return 0
@@ -427,28 +418,29 @@ execute_query() {
 
     # 존재 여부 확인
     if should_skip_query "$query" "$query_type"; then
-        ((SKIP_COUNT++))
+        SKIP_COUNT=$((SKIP_COUNT + 1))
         return 0
     fi
 
     # 쿼리 실행
-    local result=$(execute_mysql "$query" 2>&1)
+    local result
+    result=$(execute_mysql "$query" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         log SUCCESS "쿼리 실행 성공 [$query_type]"
-        ((SUCCESS_COUNT++))
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         return 0
     else
         # 에러 메시지 분석
         if [[ $result == *"Duplicate"* ]] || [[ $result == *"already exists"* ]]; then
             log SKIP "이미 존재하는 항목: $result"
-            ((SKIP_COUNT++))
+            SKIP_COUNT=$((SKIP_COUNT + 1))
             return 0
         else
             log ERROR "쿼리 실행 실패: $result"
             echo "[$query_num] 실패한 쿼리: $query" >> "$LOG_FILE"
-            ((FAIL_COUNT++))
+            FAIL_COUNT=$((FAIL_COUNT + 1))
             return 1
         fi
     fi
@@ -462,11 +454,10 @@ process_queries() {
 
     local current_query=""
     local query_num=0
-    local in_create_table=false
-    local in_create_view=false
+    local in_multiline=false
 
     # 전체 쿼리 수 계산 (예측)
-    TOTAL_QUERIES=$(grep -ci "insert\|create\|alter\|update\|drop" "$QUERY_FILE" || echo "0")
+    TOTAL_QUERIES=$(grep -ci "insert\|create\|alter\|update\|drop" "$QUERY_FILE" || true)
     log INFO "총 예상 쿼리 수: $TOTAL_QUERIES"
 
     echo "" >> "$LOG_FILE"
@@ -474,68 +465,47 @@ process_queries() {
     echo "쿼리 실행 시작" >> "$LOG_FILE"
     echo "========================================" >> "$LOG_FILE"
 
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        # 빈 줄이나 구분선 무시
-        if [[ -z "$line" ]] || [[ "$line" =~ ^[=]+$ ]]; then
+    # 파일 디스크립터 3으로 파일을 열어 루프 전체에서 동일한 fd 사용
+    while IFS= read -r line <&3 || [[ -n "$line" ]]; do
+        # 빈 줄 무시
+        if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*$ ]]; then
             continue
         fi
 
-        # 주석 제거
-        line=$(echo "$line" | sed 's/--.*$//')
-
-        # 빈 줄 다시 확인
-        if [[ -z "$(echo "$line" | xargs)" ]]; then
+        # 줄 시작의 주석(-- ...)만 제거 (SQL 문자열 내 -- 보존)
+        if [[ "$line" =~ ^[[:space:]]*-- ]]; then
             continue
         fi
 
-        # CREATE TABLE이나 CREATE VIEW 시작 감지
-        if [[ $line =~ ^CREATE[[:space:]]+TABLE ]] || [[ $line =~ ^CREATE[[:space:]]+.*TABLE ]]; then
-            in_create_table=true
-            current_query="$line"
-        elif [[ $line =~ ^create[[:space:]]+OR[[:space:]]+REPLACE[[:space:]]+VIEW ]] || [[ $line =~ ^create[[:space:]]+VIEW ]]; then
-            in_create_view=true
-            current_query="$line"
-        elif [[ $in_create_table == true ]] || [[ $in_create_view == true ]]; then
-            # 멀티라인 쿼리 계속
+        # 멀티라인 쿼리 수집 중인 경우
+        if [[ $in_multiline == true ]]; then
             current_query="$current_query $line"
-
-            # 종료 조건 확인
-            if [[ $line =~ \;$ ]]; then
-                ((query_num++))
+            # 세미콜론으로 끝나면 쿼리 완성
+            if [[ "$line" =~ \;[[:space:]]*$ ]]; then
+                query_num=$((query_num + 1))
                 execute_query "$current_query" "$query_num"
                 current_query=""
-                in_create_table=false
-                in_create_view=false
+                in_multiline=false
             fi
-        else
-            # 세미콜론으로 끝나는 단일 쿼리
-            if [[ $line =~ \;$ ]]; then
-                ((query_num++))
-                execute_query "$line" "$query_num"
-            else
-                # 멀티라인 쿼리 시작
-                current_query="$line"
-            fi
+            continue
         fi
 
-        # 이전에 시작된 쿼리 계속
-        if [[ -n "$current_query" ]] && [[ $in_create_table == false ]] && [[ $in_create_view == false ]] && [[ ! $line =~ \;$ ]]; then
-            while IFS= read -r next_line; do
-                current_query="$current_query $next_line"
-                if [[ $next_line =~ \;$ ]]; then
-                    ((query_num++))
-                    execute_query "$current_query" "$query_num"
-                    current_query=""
-                    break
-                fi
-            done
+        # 세미콜론으로 끝나는 단일 줄 쿼리
+        if [[ "$line" =~ \;[[:space:]]*$ ]]; then
+            query_num=$((query_num + 1))
+            execute_query "$line" "$query_num"
+            continue
         fi
 
-    done < "$QUERY_FILE"
+        # 세미콜론이 없으면 멀티라인 쿼리 시작
+        current_query="$line"
+        in_multiline=true
 
-    # 마지막 쿼리 처리
+    done 3< "$QUERY_FILE"
+
+    # 마지막 쿼리 처리 (세미콜론 누락 등)
     if [[ -n "$current_query" ]]; then
-        ((query_num++))
+        query_num=$((query_num + 1))
         execute_query "$current_query" "$query_num"
     fi
 
@@ -595,8 +565,8 @@ main() {
     echo "========================================"
     echo ""
 
-    # 인자 파싱
-    parse_args "$@"
+    # 연결 정보 검증 및 비밀번호 입력
+    validate_config
 
     # 시작 시간 기록
     local start_time=$(date +%s)
@@ -635,4 +605,4 @@ main() {
 #==============================================================================
 # 스크립트 실행
 #==============================================================================
-main "$@"
+main
